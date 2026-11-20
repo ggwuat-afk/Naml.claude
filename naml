@@ -1,1 +1,619 @@
+# بناء نواة i386 · 256MB · fb0@800x600 · initramfs + naml-init
 
+## 0) تبعيات جهاز البناء
+
+```sh
+# Debian/Ubuntu
+sudo apt install -y build-essential gcc-multilib bc bison flex libssl-dev libelf-dev \
+                    cpio gzip xz-utils tar coreutils binutils curl
+# Fedora
+sudo dnf install -y gcc make bc bison flex openssl-devel elfutils-libelf-devel cpio gzip xz tar curl binutils
+```
+
+---
+
+## 1) `naml-i386.config`
+
+```kconfig
+# ============================================================================
+# naml-i386.config — يُدمج فوق allnoconfig ثم olddefconfig
+# i386 · 256MB RAM · initramfs · /dev/fb0 @800x600 · أقل استهلاك ذاكرة
+# ============================================================================
+
+# ==== 1) المعمارية / المعالج / الذاكرة ====
+CONFIG_X86_32=y
+# CONFIG_64BIT is not set
+CONFIG_M686=y
+# CONFIG_MPENTIUM4=y          # بديل مضبوط لمعالج Pentium 4 (احذف M686 أعلاه)
+# CONFIG_MK7=y                # بديل لـ Athlon XP
+# CONFIG_M486 is not set
+# CONFIG_M586 is not set
+# CONFIG_SMP is not set
+# CONFIG_X86_PAE is not set
+CONFIG_NOHIGHMEM=y
+# CONFIG_HIGHMEM4G is not set
+CONFIG_VMSPLIT_3G=y
+CONFIG_EXPERT=y
+CONFIG_MULTIUSER=y
+CONFIG_BASE_FULL=y
+CONFIG_BUG=y
+CONFIG_CC_OPTIMIZE_FOR_SIZE=y
+CONFIG_KERNEL_GZIP=y
+# CONFIG_KERNEL_XZ is not set
+# CONFIG_KERNEL_ZSTD is not set
+CONFIG_UNWINDER_GUESS=y
+# CONFIG_UNWINDER_FRAME_POINTER is not set
+# CONFIG_RELOCATABLE is not set
+# CONFIG_RANDOMIZE_BASE is not set
+CONFIG_LOG_BUF_SHIFT=16
+CONFIG_PRINTK_SAFE_LOG_BUF_SHIFT=12
+CONFIG_HZ_100=y
+CONFIG_HZ=100
+CONFIG_NO_HZ_IDLE=y
+CONFIG_HIGH_RES_TIMERS=y
+CONFIG_SWAP=y
+# CONFIG_MEMCG is not set
+# CONFIG_CGROUPS is not set
+# CONFIG_NAMESPACES is not set
+# CONFIG_KSM is not set
+# CONFIG_TRANSPARENT_HUGEPAGE is not set
+# CONFIG_INIT_ON_ALLOC_DEFAULT_ON is not set
+# CONFIG_INIT_ON_FREE_DEFAULT_ON is not set
+# CONFIG_SLUB_DEBUG is not set
+# CONFIG_PAGE_POISONING is not set
+# CONFIG_DEBUG_PAGEALLOC is not set
+# CONFIG_VM_EVENT_COUNTERS is not set
+
+# ==== 2) تنفيذ المستخدمين + initramfs ====
+CONFIG_BLOCK=y
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+# CONFIG_RD_BZIP2 is not set
+# CONFIG_RD_LZMA is not set
+# CONFIG_RD_XZ is not set
+# CONFIG_RD_LZO is not set
+# CONFIG_RD_LZ4 is not set
+# CONFIG_RD_ZSTD is not set
+CONFIG_INITRAMFS_SOURCE=""
+# CONFIG_BLK_DEV_RAM is not set
+CONFIG_BINFMT_ELF=y
+CONFIG_BINFMT_SCRIPT=y
+# CONFIG_BINFMT_MISC is not set
+# CONFIG_COREDUMP is not set
+# CONFIG_MODULES is not set
+
+# ==== 3) syscalls لازمة لأي userland حديث ====
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EVENTFD=y
+CONFIG_POSIX_TIMERS=y
+CONFIG_ADVISE_SYSCALLS=y
+CONFIG_MEMBARRIER=y
+CONFIG_SYSVIPC=y
+# CONFIG_AIO is not set
+# CONFIG_IO_URING is not set
+# CONFIG_BPF_SYSCALL is not set
+# CONFIG_SECCOMP is not set
+# CONFIG_AUDIT is not set
+# CONFIG_SECURITY is not set
+
+# ==== 4) /proc /sys /dev /tmpfs ====
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_PROC_FS=y
+CONFIG_PROC_SYSCTL=y
+CONFIG_SYSFS=y
+CONFIG_TMPFS=y
+CONFIG_SHMEM=y
+# CONFIG_TMPFS_POSIX_ACL is not set
+CONFIG_UEVENT_HELPER=y
+CONFIG_UEVENT_HELPER_PATH=""
+# CONFIG_PROC_KCORE is not set
+# CONFIG_SECURITYFS is not set
+# CONFIG_DEBUG_FS is not set
+# CONFIG_CONFIGFS_FS is not set
+
+# ==== 5) طرفية + لوحة مفاتيح PS/2 (بلا هذا لا يوجد إدخال!) ====
+CONFIG_TTY=y
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_VT_HW_CONSOLE_BINDING=y
+CONFIG_UNIX98_PTYS=y
+# CONFIG_LEGACY_PTYS is not set
+CONFIG_INPUT=y
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_ATKBD=y
+CONFIG_SERIO=y
+CONFIG_SERIO_I8042=y
+# CONFIG_INPUT_MOUSE is not set
+# CONFIG_INPUT_MOUSEDEV is not set
+# CONFIG_INPUT_JOYSTICK is not set
+# CONFIG_INPUT_TOUCHSCREEN is not set
+# CONFIG_INPUT_MISC is not set
+CONFIG_PRINTK=y
+CONFIG_EARLY_PRINTK=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_NR_UARTS=1
+CONFIG_SERIAL_8250_RUNTIME_UARTS=1
+# CONFIG_SERIAL_8250_MANY_PORTS is not set
+# CONFIG_SERIAL_8250_PNP is not set
+
+# ==== 6) FRAMEBUFFER — /dev/fb0 ====
+CONFIG_FB=y
+CONFIG_FB_DEVICE=y                   # ≥6.6 : بدونه لا يُنشأ /dev/fb0 نهائياً
+CONFIG_FB_MODE_HELPERS=y
+# CONFIG_FB_TILEBLITTING is not set
+CONFIG_FB_VESA=y                     # BIOS VBE  (vga=0x314 = 800x600x16)
+# CONFIG_FB_EFI is not set
+# CONFIG_FB_UVESA is not set
+# CONFIG_FB_SIMPLE is not set
+CONFIG_X86_SYSFB=y                   # ≤5.14
+CONFIG_SYSFB=y
+CONFIG_SYSFB_SIMPLEFB=y              # ≥5.15
+CONFIG_DRM=y
+CONFIG_DRM_SIMPLEDRM=y               # المسار الأساسي لـ fb0 (GRUB gfxpayload)
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_DRM_FBDEV_OVERALLOC=100
+# CONFIG_DRM_CLIENT_DEFAULT_LOGO is not set   # تأمين لنوى ≥6.13
+# CONFIG_DRM_I915 is not set
+# CONFIG_DRM_RADEON is not set
+# CONFIG_DRM_NOUVEAU is not set
+# CONFIG_DRM_BOCHS is not set
+# CONFIG_DRM_CIRRUS_QEMU is not set
+# CONFIG_DRM_VMWGFX is not set
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
+# CONFIG_FRAMEBUFFER_CONSOLE_ROTATION is not set
+CONFIG_FONT_8x16=y
+# CONFIG_FONT_TER16x32 is not set
+# CONFIG_LOGO is not set
+CONFIG_VGA_CONSOLE=y                 # شبكة أمان نصية لو فشل VBE
+
+# ==== 7) عتاد أساسي + طاقة (poweroff يقطع الكهرباء فعلاً) ====
+CONFIG_PCI=y
+# CONFIG_PCIEPORTBUS is not set
+# CONFIG_PCI_MSI is not set
+# CONFIG_HOTPLUG_PCI is not set
+# CONFIG_EDD is not set
+# CONFIG_ISA is not set
+# CONFIG_PNP is not set
+# CONFIG_X86_PLATFORM_DEVICES is not set
+# CONFIG_MICROCODE is not set
+# CONFIG_X86_MCE is not set
+# CONFIG_CPU_FREQ is not set
+CONFIG_ACPI=y
+CONFIG_SUSPEND=y                     # يضمن ACPI_SLEEP ⇒ S5 power-off
+# CONFIG_HIBERNATION is not set
+# CONFIG_PM_DEBUG is not set
+# CONFIG_ACPI_PROCESSOR is not set
+# CONFIG_ACPI_THERMAL is not set
+# CONFIG_ACPI_FAN is not set
+# CONFIG_ACPI_VIDEO is not set
+# CONFIG_ACPI_AC is not set
+# CONFIG_ACPI_BATTERY is not set
+# CONFIG_ACPI_DOCK is not set
+CONFIG_APM=y                         # احتياط لأجهزة بلا ACPI
+# CONFIG_APM_CPU_IDLE is not set
+# CONFIG_APM_DISPLAY_BLANK is not set
+CONFIG_MAGIC_SYSRQ=y                 # يستخدمه naml-init كخطة إيقاف بديلة
+CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE=0x1
+# CONFIG_MAGIC_SYSRQ_SERIAL is not set
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_HCTOSYS=y
+CONFIG_RTC_DRV_CMOS=y
+
+# ==== 8) شبكة دنيا (lo + AF_UNIX) — احذف القسم كله لتوفير ~350KB ====
+CONFIG_NET=y
+CONFIG_NETDEVICES=y
+CONFIG_UNIX=y
+CONFIG_INET=y
+# CONFIG_IPV6 is not set
+# CONFIG_PACKET is not set
+# CONFIG_NETFILTER is not set
+# CONFIG_ETHERNET is not set
+# CONFIG_WLAN is not set
+# CONFIG_WIRELESS is not set
+# CONFIG_USB_SUPPORT is not set
+# CONFIG_SOUND is not set
+# CONFIG_HID is not set
+
+# ==== 9) إزالة كل ما يثقل النواة ====
+# CONFIG_DEBUG_KERNEL is not set
+CONFIG_DEBUG_INFO_NONE=y
+# CONFIG_KALLSYMS is not set
+# CONFIG_KALLSYMS_ALL is not set
+# CONFIG_IKCONFIG is not set
+# CONFIG_PROFILING is not set
+# CONFIG_PERF_EVENTS is not set
+# CONFIG_KPROBES is not set
+# CONFIG_FTRACE is not set
+# CONFIG_STACKTRACE is not set
+# CONFIG_SCHEDSTATS is not set
+# CONFIG_SCHED_DEBUG is not set
+# CONFIG_DEBUG_BUGVERBOSE is not set
+# CONFIG_SAMPLES is not set
+# CONFIG_GCC_PLUGINS is not set
+
+# ==== 10) سطر أوامر مدمج (احتياط لو مدخل GRUB ناقص) ====
+CONFIG_CMDLINE_BOOL=y
+CONFIG_CMDLINE="console=tty1 quiet loglevel=3 edd=off panic=10"
+# CONFIG_CMDLINE_OVERRIDE is not set
+
+# ==== 11) اختياري: تسريع ملموس على معالج 2002 (جهاز غير متصل فقط) ====
+# أزل التعليق عن السطرين التاليين لقبول التنازل عن تحصينات الثغرات التخمينية:
+# # CONFIG_RETPOLINE is not set
+# # CONFIG_PAGE_TABLE_ISOLATION is not set
+```
+
+---
+
+## 2) `naml-disk.config` (اختياري — للإقلاع من قرص IDE/SATA)
+
+```kconfig
+# ============================================================================
+# naml-disk.config — تعريفات قرص + ext2/3/4 مدمجة (بلا modules)
+# عطّله بـ NAML_DISK=0 إذا كان النظام كله داخل initramfs
+# ============================================================================
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_ATA=y
+CONFIG_ATA_SFF=y
+CONFIG_ATA_BMDMA=y
+CONFIG_ATA_PIIX=y
+CONFIG_PATA_AMD=y
+CONFIG_PATA_VIA=y
+CONFIG_PATA_SIS=y
+CONFIG_ATA_GENERIC=y
+CONFIG_SATA_AHCI=y
+# CONFIG_BLK_DEV_SR is not set
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_USE_FOR_EXT2=y
+# CONFIG_EXT4_FS_POSIX_ACL is not set
+# CONFIG_EXT4_FS_SECURITY is not set
+CONFIG_VFAT_FS=y
+CONFIG_NLS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_MSDOS_PARTITION=y
+# CONFIG_EFI_PARTITION is not set
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_MQ_IOSCHED_DEADLINE=y
+# CONFIG_MQ_IOSCHED_KYBER is not set
+# CONFIG_IOSCHED_BFQ is not set
+# CONFIG_ISO9660_FS is not set
+# CONFIG_MISC_FILESYSTEMS is not set
+# CONFIG_NETWORK_FILESYSTEMS is not set
+```
+
+---
+
+## 3) `build-naml-kernel.sh`
+
+```sh
+#!/bin/sh
+# ============================================================================
+# build-naml-kernel.sh — يُنفَّذ على جهاز بناء حديث، لا على جهاز 256MB
+#   KVER=6.6.x | KSER=6.6 | KSRC=/path/linux
+#   BB=/path/busybox-i386-static   (إلزامي)
+#   INIT=./naml-init   NAML_SHELL_BIN=./naml-shell   CONF=./init.conf
+#   NAML_DISK=1   EMBED=0   JOBS=$(nproc)   OUT=./out
+# ============================================================================
+set -eu
+
+KSER=${KSER:-6.6}
+KVER=${KVER:-}
+KSRC=${KSRC:-}
+WORK=${WORK:-$PWD/.naml-build}
+OUT=${OUT:-$PWD/out}
+FRAG=${FRAG:-$PWD/naml-i386.config}
+DISKFRAG=${DISKFRAG:-$PWD/naml-disk.config}
+NAML_DISK=${NAML_DISK:-1}
+EMBED=${EMBED:-0}
+JOBS=${JOBS:-$(nproc 2>/dev/null || echo 2)}
+CROSS=${CROSS_COMPILE:-}
+INIT=${INIT:-$PWD/naml-init}
+BB=${BB:-}
+NAML_SHELL_BIN=${NAML_SHELL_BIN:-}
+CONF=${CONF:-}
+RCS=${RCS:-}
+LIBDIRS=${LIBDIRS:-/lib/i386-linux-gnu /usr/lib/i386-linux-gnu /lib32 /usr/lib32}
+IRFS="$WORK/initramfs"
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+say() { printf '\n=== %s ===\n' "$*"; }
+fetch() {
+    if command -v curl >/dev/null 2>&1; then curl -fsSL "$1"
+    elif command -v wget >/dev/null 2>&1; then wget -qO- "$1"
+    else die "need curl or wget"; fi
+}
+
+for t in make gcc ld readelf bc bison flex perl cpio gzip tar xz find od cut sort sed grep install; do
+    command -v "$t" >/dev/null 2>&1 || die "missing host tool: $t"
+done
+[ -r "$FRAG" ] || die "missing $FRAG"
+mkdir -p "$WORK" "$OUT"
+
+# ---- 1) سلسلة الأدوات 32-bit ----
+if [ -z "$CROSS" ]; then
+    if printf 'int naml;\n' | ${CC:-gcc} -m32 -x c -c - -o "$WORK/m32.o" 2>/dev/null; then
+        say "toolchain: native gcc -m32"
+    else
+        for c in i686-linux-gnu- i586-linux-gnu- i386-linux-gnu-; do
+            if command -v "${c}gcc" >/dev/null 2>&1; then CROSS=$c; break; fi
+        done
+        [ -n "$CROSS" ] || die "no 32-bit toolchain (gcc-multilib أو gcc-i686-linux-gnu)"
+        say "toolchain: ${CROSS}gcc"
+    fi
+fi
+KMAKE="make ARCH=i386"
+if [ -n "$CROSS" ]; then KMAKE="$KMAKE CROSS_COMPILE=$CROSS"; fi
+
+# ---- 2) مصدر النواة ----
+if [ -n "$KSRC" ]; then
+    KDIR=$KSRC
+    [ -f "$KDIR/Makefile" ] || die "KSRC is not a kernel tree"
+else
+    MIRROR=${MIRROR:-https://cdn.kernel.org/pub/linux/kernel/v${KSER%%.*}.x}
+    if [ -z "$KVER" ]; then
+        say "resolving latest ${KSER}.x"
+        KVER=$(fetch "$MIRROR/" \
+               | grep -oE "linux-${KSER}\.[0-9]+\.tar\.xz" \
+               | sed -e 's/^linux-//' -e 's/\.tar\.xz$//' | sort -V | tail -1)
+    fi
+    [ -n "$KVER" ] || die "cannot resolve version; run: KVER=6.6.x $0"
+    TARBALL="$WORK/linux-$KVER.tar.xz"
+    if [ ! -f "$TARBALL" ]; then say "downloading linux-$KVER"; fetch "$MIRROR/linux-$KVER.tar.xz" > "$TARBALL"; fi
+    KDIR="$WORK/linux-$KVER"
+    if [ ! -d "$KDIR" ]; then tar -xf "$TARBALL" -C "$WORK"; fi
+fi
+say "kernel: $KDIR"
+
+# ---- 3) شجرة initramfs ----
+elf32_i386() {
+    _h=$(od -An -tx1 -N20 "$1" | tr -d ' \n')
+    case $_h in 7f454c4601*) ;; *) die "not ELF32: $1" ;; esac
+    [ "$(printf '%s' "$_h" | cut -c37-40)" = "0300" ] \
+        || die "not i386 code (kernel i386 needs i386 userland): $1"
+}
+findlib() {
+    for _d in $LIBDIRS /lib /usr/lib; do
+        if [ -f "$_d/$1" ]; then printf '%s' "$_d/$1"; return 0; fi
+    done
+    return 1
+}
+copy_libs() {
+    if ! readelf -l "$1" 2>/dev/null | grep -q 'program interpreter'; then return 0; fi
+    _it=$(readelf -l "$1" 2>/dev/null | sed -n 's/.*interpreter: \(.*\)]/\1/p')
+    if [ -n "$_it" ]; then
+        if [ -f "$_it" ]; then install -D -m755 "$_it" "$IRFS$_it"
+        else _src=$(findlib "$(basename "$_it")") || die "missing loader $_it"
+             install -D -m755 "$_src" "$IRFS$_it"; fi
+    fi
+    for _n in $(readelf -d "$1" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'); do
+        _src=$(findlib "$_n") || die "missing i386 lib $_n (set LIBDIRS=...)"
+        install -D -m755 "$_src" "$IRFS/lib/$_n"
+    done
+}
+build_irfs() {
+    [ -n "$BB" ] && [ -f "$BB" ] || die "BB=/path/to/busybox (static i386) is required"
+    [ -f "$INIT" ] || die "INIT=/path/to/naml-init is required"
+    elf32_i386 "$BB"
+    if readelf -l "$BB" 2>/dev/null | grep -q 'program interpreter'; then
+        die "busybox must be STATIC: $BB"
+    fi
+    rm -rf "$IRFS"
+    mkdir -p "$IRFS/bin" "$IRFS/sbin" "$IRFS/usr/bin" "$IRFS/etc/naml" "$IRFS/lib" \
+             "$IRFS/dev/pts" "$IRFS/dev/shm" "$IRFS/proc" "$IRFS/sys" "$IRFS/run" "$IRFS/tmp"
+    install -m755 "$BB"   "$IRFS/bin/busybox"
+    install -m755 "$INIT" "$IRFS/sbin/naml-init"
+    ln -sf /sbin/naml-init "$IRFS/init"
+    for a in sh ash mount umount mknod mkdir ln ls cat echo printf sleep sync kill \
+             reboot poweroff halt setsid cttyhack env stty mdev ip ifconfig hostname \
+             dmesg swapoff switch_root losetup fbset clear reset ps free top vi; do
+        ln -sf busybox "$IRFS/bin/$a"
+    done
+    if [ -n "$NAML_SHELL_BIN" ]; then
+        [ -f "$NAML_SHELL_BIN" ] || die "NAML_SHELL_BIN not found"
+        elf32_i386 "$NAML_SHELL_BIN"
+        install -m755 "$NAML_SHELL_BIN" "$IRFS/usr/bin/naml-shell"
+        copy_libs "$NAML_SHELL_BIN"
+    fi
+    if [ -n "$CONF" ]; then install -m644 "$CONF" "$IRFS/etc/naml/init.conf"; fi
+    if [ -n "$RCS" ];  then install -m755 "$RCS"  "$IRFS/etc/rcS"; fi
+    chmod 1777 "$IRFS/tmp"
+}
+say "initramfs tree"
+build_irfs
+
+# ---- 4) الضبط ----
+cd "$KDIR"
+say "configure (allnoconfig + fragments)"
+$KMAKE allnoconfig
+scripts/kconfig/merge_config.sh -m .config "$FRAG" >/dev/null
+if [ "$NAML_DISK" = 1 ]; then
+    [ -r "$DISKFRAG" ] || die "missing $DISKFRAG"
+    scripts/kconfig/merge_config.sh -m .config "$DISKFRAG" >/dev/null
+fi
+if [ "$EMBED" = 1 ]; then
+    scripts/config --set-str INITRAMFS_SOURCE "$IRFS"
+    scripts/config --enable INITRAMFS_COMPRESSION_GZIP
+fi
+$KMAKE olddefconfig
+
+# ---- 5) تأكيد الخيارات الحرجة ----
+MISS=0
+need() { for s in "$@"; do
+    if ! grep -qx "$s=y" .config; then printf '  MISSING %s=y\n' "$s"; MISS=$((MISS+1)); fi
+done; }
+need_any() { for s in "$@"; do
+    if grep -qx "$s=y" .config; then return 0; fi
+done; printf '  MISSING one of: %s\n' "$*"; MISS=$((MISS+1)); }
+off() { for s in "$@"; do
+    if grep -qx "$s=y" .config; then printf '  MUST BE OFF %s\n' "$s"; MISS=$((MISS+1)); fi
+done; }
+
+say "assert config"
+need CONFIG_X86_32 CONFIG_NOHIGHMEM CONFIG_BLK_DEV_INITRD CONFIG_RD_GZIP \
+     CONFIG_BINFMT_ELF CONFIG_BINFMT_SCRIPT CONFIG_DEVTMPFS CONFIG_PROC_FS \
+     CONFIG_PROC_SYSCTL CONFIG_SYSFS CONFIG_TMPFS CONFIG_TTY CONFIG_VT \
+     CONFIG_VT_CONSOLE CONFIG_UNIX98_PTYS CONFIG_INPUT CONFIG_KEYBOARD_ATKBD \
+     CONFIG_SERIO_I8042 CONFIG_PRINTK CONFIG_FB CONFIG_FRAMEBUFFER_CONSOLE \
+     CONFIG_FONT_8x16 CONFIG_DRM CONFIG_DRM_SIMPLEDRM CONFIG_DRM_FBDEV_EMULATION \
+     CONFIG_FB_VESA CONFIG_PCI CONFIG_ACPI CONFIG_MAGIC_SYSRQ CONFIG_FUTEX CONFIG_EPOLL
+need_any CONFIG_SYSFB_SIMPLEFB CONFIG_X86_SYSFB
+if [ "$(printf '%s\n6.6\n' "${KVER:-6.6}" | sort -V | head -1)" = "6.6" ]; then
+    need CONFIG_FB_DEVICE
+fi
+off CONFIG_MODULES CONFIG_64BIT CONFIG_HIGHMEM4G CONFIG_SMP CONFIG_DEBUG_KERNEL \
+    CONFIG_KALLSYMS CONFIG_LOGO CONFIG_BLK_DEV_RAM
+if [ "$NAML_DISK" = 1 ]; then need CONFIG_ATA CONFIG_ATA_PIIX CONFIG_BLK_DEV_SD CONFIG_EXT4_FS; fi
+if [ "$MISS" -ne 0 ]; then die "$MISS config assertion(s) failed (راجع .config أو make menuconfig)"; fi
+printf '  all assertions passed\n'
+
+# ---- 6) البناء ----
+say "build bzImage (-j$JOBS)"
+$KMAKE -j"$JOBS" bzImage
+
+# ---- 7) المخرجات ----
+say "package"
+install -m644 arch/x86/boot/bzImage "$OUT/vmlinuz-naml"
+install -m644 .config "$OUT/naml-i386.config"
+if [ -f System.map ]; then install -m644 System.map "$OUT/System.map-naml"; fi
+( cd "$IRFS" && find . -print | cpio -o -H newc --owner=0:0 2>/dev/null | gzip -9 ) \
+    > "$OUT/initramfs-naml.cpio.gz"
+
+say "artifacts in $OUT"
+ls -l "$OUT"
+printf '\nframebuffer config:\n'
+grep -E '^CONFIG_(FB|FB_DEVICE|FB_VESA|DRM_SIMPLEDRM|DRM_FBDEV_EMULATION|SYSFB_SIMPLEFB|X86_SYSFB|FRAMEBUFFER_CONSOLE|FONT_8x16)=' .config || true
+printf '\nnext: sudo ROOTDEV=/dev/sda1 ./install-naml-boot.sh %s %s\n' \
+    "$OUT/vmlinuz-naml" "$OUT/initramfs-naml.cpio.gz"
+```
+
+---
+
+## 4) `install-naml-boot.sh` (على الجهاز الهدف)
+
+```sh
+#!/bin/sh
+# ============================================================================
+# install-naml-boot.sh — ينصب النواة/الـ initramfs ويكتب مداخل GRUB
+#   sudo ROOTDEV=/dev/sda1 ./install-naml-boot.sh out/vmlinuz-naml out/initramfs-naml.cpio.gz
+#   EMBED=1 : لا تمرّر ملف initramfs (مضمّن داخل bzImage)
+# ============================================================================
+set -eu
+
+KER=${1:-out/vmlinuz-naml}
+IRD=${2:-}
+ROOTDEV=${ROOTDEV:-/dev/sda1}
+CMDLINE="console=tty1 quiet loglevel=3 edd=off panic=10 vt.global_cursor_default=0"
+
+[ "$(id -u)" = 0 ] || { echo "root required"; exit 1; }
+[ -f "$KER" ] || { echo "kernel image not found: $KER"; exit 1; }
+
+install -D -m644 "$KER" /boot/vmlinuz-naml
+if [ -n "$IRD" ] && [ -f "$IRD" ]; then
+    install -D -m644 "$IRD" /boot/initramfs-naml.img
+fi
+
+if mountpoint -q /boot 2>/dev/null; then P=""; else P="/boot"; fi
+if [ -f /boot/initramfs-naml.img ]; then IL="\tinitrd $P/initramfs-naml.img"; else IL=""; fi
+
+cat > /etc/grub.d/40_naml <<EOF
+#!/bin/sh
+exec tail -n +3 \$0
+menuentry "naml | fb0 800x600x16 (simpledrm)" {
+\tinsmod all_video
+\tsearch --no-floppy --file --set=root $P/vmlinuz-naml
+\tset gfxpayload=800x600x16
+\tlinux $P/vmlinuz-naml $CMDLINE
+$IL
+}
+menuentry "naml | fb0 800x600x16 (vesafb / BIOS VBE)" {
+\tinsmod all_video
+\tsearch --no-floppy --file --set=root $P/vmlinuz-naml
+\tset gfxpayload=text
+\tlinux $P/vmlinuz-naml vga=0x314 video=vesafb:ywrap,mtrr:3 $CMDLINE
+$IL
+}
+menuentry "naml | fb0 800x600x32 (simpledrm, 32bpp)" {
+\tinsmod all_video
+\tsearch --no-floppy --file --set=root $P/vmlinuz-naml
+\tset gfxpayload=800x600x32
+\tlinux $P/vmlinuz-naml $CMDLINE
+$IL
+}
+menuentry "naml | disk root $ROOTDEV (يتطلب EMBED=0)" {
+\tinsmod all_video
+\tsearch --no-floppy --file --set=root $P/vmlinuz-naml
+\tset gfxpayload=800x600x16
+\tlinux $P/vmlinuz-naml root=$ROOTDEV rootfstype=ext4 rw init=/sbin/naml-init $CMDLINE
+}
+EOF
+chmod 755 /etc/grub.d/40_naml
+
+if command -v grub-mkconfig >/dev/null 2>&1; then
+    grub-mkconfig -o /boot/grub/grub.cfg
+elif command -v grub2-mkconfig >/dev/null 2>&1; then
+    grub2-mkconfig -o /boot/grub2/grub.cfg
+elif command -v update-grub >/dev/null 2>&1; then
+    update-grub
+else
+    echo "GRUB mkconfig not found: أضف مداخل /etc/grub.d/40_naml يدوياً"
+fi
+
+echo "installed: /boot/vmlinuz-naml  $P"
+# لتثبيت GRUB نفسه على القرص (مرة واحدة، عند الحاجة فقط):
+# grub-install /dev/sda
+```
+
+---
+
+## 5) التشغيل
+
+```sh
+chmod +x build-naml-kernel.sh install-naml-boot.sh
+
+# بناء (busybox يجب أن يكون i386 ثابت)
+BB=/path/busybox-i386-static INIT=./naml-init NAML_SHELL_BIN=./naml-shell \
+  ./build-naml-kernel.sh
+
+# بناء بصورة واحدة مضمّنة (بلا ملف initrd في GRUB)
+BB=/path/busybox-i386-static INIT=./naml-init NAML_SHELL_BIN=./naml-shell \
+  EMBED=1 ./build-naml-kernel.sh
+
+# على الجهاز الهدف
+sudo ROOTDEV=/dev/sda1 ./install-naml-boot.sh out/vmlinuz-naml out/initramfs-naml.cpio.gz
+```
+
+---
+
+## 6) تحقق على الجهاز
+
+```sh
+ls -l /dev/fb0
+cat /proc/fb                              # 0 simpledrmdrmfb  (أو VESA VGA)
+cat /sys/class/graphics/fb0/virtual_size   # 800,600
+cat /sys/class/graphics/fb0/bits_per_pixel # 16
+fbset -i
+afree -m ; dmesg | grep -iE 'fb0|simpledrm|vesa|Console'
+```
+
+---
+
+## 7) ملاحظات موجزة
+
+- `800x600x16` ≈ **0.9 MiB** للـ framebuffer؛ `x32` ≈ 1.9 MiB. استخدم مدخل 32bpp فقط إن كانت واجهتك تشترط 32bpp.
+- المسار الأساسي لـ fb0 هو `simpledrm` (يعمل في المدخلين)؛ `vesafb` احتياط عند غياب DRM.
+- `CONFIG_FB_DEVICE=y` إلزامي في ≥6.6، و`CONFIG_SYSFB_SIMPLEFB`/`X86_SYSFB` إلزامي لظهور جهاز الـ framebuffer الأصلي — السكربت يتحقق منهما ويُفشل البناء عند نقصهما.
+- busybox/naml-shell **يجب أن يكونا i386**؛ السكربت يفحص ترويسة ELF ويرفض x86_64، وينسخ المكتبات تلقائياً للثنائيات الديناميكية.
+- GRUB Legacy (`/boot/grub/menu.lst`) بدلاً من GRUB2:
+  ```
+  title naml fb0 800x600
+  root (hd0,0)
+  kernel /boot/vmlinuz-naml vga=0x314 video=vesafb:ywrap,mtrr:3 console=tty1 quiet loglevel=3 edd=off
+  initrd /boot/initramfs-naml.img
+  ```
