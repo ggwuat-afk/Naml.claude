@@ -1,0 +1,23 @@
+#!/bin/sh
+# naml-x — تشغيل Xorg على tty1 مع fluxbox. يُستدعى من /etc/inittab (respawn).
+
+# لا تشغّل نسخة ثانية إن كان الخادم يعمل
+if [ -e /tmp/.X11-unix/X0 ]; then
+    sleep 2
+    exit 0
+fi
+
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export XDG_CONFIG_HOME=/root/.config
+
+# فهرس خطوط Xft مرة واحدة (DejaVu/Liberation) حتى لا تظهر رسائل «no fonts»
+if [ ! -s /root/.cache/fontconfig/ok ]; then
+    mkdir -p /root/.cache/fontconfig
+    fc-cache -f >/dev/null 2>&1 && : > /root/.cache/fontconfig/ok
+fi
+
+# رسالة على الشاشة النصية لو فشل X، حتى لا تبقى الشاشة سوداء بلا تفسير
+exec /usr/bin/xinit /root/.xinitrc -- \
+    /usr/bin/Xorg :0 vt01 -nolisten tcp -dpi 96 \
+    >>/var/log/naml-x.log 2>&1

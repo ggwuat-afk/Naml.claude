@@ -1,0 +1,30 @@
+#!/bin/sh
+# NAML desktop — تهيئة PID1 قبل تشغيل X. لا openrc، لا udev: busybox فقط.
+
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys  || mount -t sysfs sysfs /sys
+mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev
+
+mkdir -p /dev/pts /dev/shm /tmp /var/log /var/run /var/tmp
+chmod 1777 /tmp /var/tmp
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
+mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
+mountpoint -q /tmp     || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+
+# لوحة المفاتيح/الماوس الساخنة (PS2 أو USB تُوصَل بعد الإقلاع)
+if [ -x /sbin/mdev ]; then
+    echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null
+    mdev -s 2>/dev/null
+fi
+
+[ -s /etc/hostname ] && hostname -F /etc/hostname 2>/dev/null
+
+# ساعة الجهاز إن وُجد RTC
+if [ -e /dev/rtc0 ] && [ -x /sbin/hwclock ]; then
+    /sbin/hwclock --hctosys 2>/dev/null
+fi
+
+# /etc/mtab كرابط لـ /proc/mounts حتى لا يفشل df/mount
+[ -e /etc/mtab ] || ln -sf /proc/mounts /etc/mtab
+
+exit 0

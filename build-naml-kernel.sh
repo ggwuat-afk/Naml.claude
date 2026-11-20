@@ -17,6 +17,8 @@ OUT=${OUT:-$PWD/out}
 FRAG=${FRAG:-$PWD/naml-i386.config}
 DISKFRAG=${DISKFRAG:-$PWD/naml-disk.config}
 NAML_DISK=${NAML_DISK:-1}
+DESKFRAG=${DESKFRAG:-$PWD/naml-desktop.config}
+NAML_DESKTOP=${NAML_DESKTOP:-0}
 EMBED=${EMBED:-0}
 JOBS=${JOBS:-$(nproc 2>/dev/null || echo 2)}
 CROSS=${CROSS_COMPILE:-}
@@ -154,6 +156,10 @@ if [ "$NAML_DISK" = 1 ]; then
     [ -r "$DISKFRAG" ] || die "missing $DISKFRAG"
     scripts/kconfig/merge_config.sh -m .config "$DISKFRAG" >/dev/null
 fi
+if [ "$NAML_DESKTOP" = 1 ]; then
+    [ -r "$DESKFRAG" ] || die "missing $DESKFRAG"
+    scripts/kconfig/merge_config.sh -m .config "$DESKFRAG" >/dev/null
+fi
 if [ "$EMBED" = 1 ]; then
     scripts/config --set-str INITRAMFS_SOURCE "$IRFS"
     scripts/config --enable INITRAMFS_COMPRESSION_GZIP
@@ -189,6 +195,10 @@ off CONFIG_MODULES CONFIG_64BIT CONFIG_HIGHMEM4G CONFIG_SMP \
     CONFIG_KALLSYMS CONFIG_LOGO CONFIG_BLK_DEV_RAM
 if [ "$NAML_DISK" = 1 ]; then
     need CONFIG_ATA CONFIG_ATA_PIIX CONFIG_BLK_DEV_SD CONFIG_EXT4_FS
+fi
+if [ "$NAML_DESKTOP" = 1 ]; then
+    need CONFIG_INPUT_EVDEV CONFIG_MOUSE_PS2 CONFIG_USB CONFIG_USB_HID \
+         CONFIG_HID_SUPPORT CONFIG_USB_UHCI_HCD CONFIG_USB_OHCI_HCD
 fi
 if [ "$MISS" -ne 0 ]; then die "$MISS config assertion(s) failed"; fi
 printf '  all assertions passed\n'

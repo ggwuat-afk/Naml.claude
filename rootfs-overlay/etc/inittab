@@ -1,0 +1,14 @@
+# /etc/inittab — NAML i386 desktop
+# busybox init (PID1) يقرأ هذا الملف مباشرةً: بلا openrc وبلا services.
+
+::sysinit:/etc/naml/rc.sysinit
+
+# سطح المكتب على الشاشة الأولى (X يشتغل كـ root، لا حاجة لتسجيل دخول)
+tty1::respawn:/usr/bin/naml-x
+
+# طرفيات نصية احتياطية
+tty2::respawn:/sbin/getty 38400 tty2
+tty3::respawn:/sbin/getty 38400 tty3
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r

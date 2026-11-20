@@ -46,7 +46,9 @@ jobs:
 
       - name: Lint scripts
         run: |
-          for f in naml-init naml-shell build-naml-kernel.sh build-busybox-i386.sh install-naml-boot.sh; do
+          for f in naml-init naml-shell build-naml-kernel.sh build-busybox-i386.sh \
+                   build-naml-rootfs.sh install-naml-boot.sh install-naml-desktop.sh \
+                   rootfs-overlay/etc/naml/rc.sysinit rootfs-overlay/usr/bin/naml-x; do
             sh -n "$f" && echo "ok: $f"
           done
 
@@ -55,9 +57,13 @@ jobs:
           BB_VER: ${{ inputs.bbver }}
         run: sh build-busybox-i386.sh
 
+      - name: Build desktop rootfs (Alpine i386 + Xorg fbdev + fluxbox)
+        run: sh build-naml-rootfs.sh
+
       - name: Build kernel + initramfs
         env:
           KVER: ${{ inputs.kver }}
+          NAML_DESKTOP: '1'
           NAML_DISK: ${{ inputs.disk }}
           EMBED: ${{ inputs.embed }}
           BB: ${{ github.workspace }}/out/busybox-i386-static

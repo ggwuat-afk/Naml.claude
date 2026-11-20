@@ -3,6 +3,9 @@
 نواة **i386** بحد أدنى من الخيارات: 256MB RAM، `initramfs`، و`/dev/fb0` بدقة
 800×600 عبر `simpledrm` (أو `vesafb` كاحتياط).
 
+وفوقها مسار **سطح مكتب** كامل: جذر Alpine i386 المثبَّت على قرص ext4، مع Xorg
+على `fbdev` ومدير نوافذ fluxbox (راجع [سطح المكتب](#سطح-المكتب-xorg--fluxbox)).
+
 ## الملفات
 
 | الملف | الوظيفة |
@@ -15,7 +18,11 @@
 | `build-busybox-i386.sh` | يبني BusyBox ثابت i386 → `out/busybox-i386-static` |
 | `build-naml-kernel.sh` | بناء النواة + شجرة initramfs + التغليف |
 | `install-naml-boot.sh` | تثبيت النواة على الجهاز الهدف وكتابة مداخل GRUB |
-| `.github/workflows/build-naml.yml` | نفس البناء كاملاً في CI (BusyBox + نواة + initramfs) |
+| `naml-desktop.config` | اختياري: شريحة ماوس PS/2 + USB HID لسطح المكتب |
+| `build-naml-rootfs.sh` | يبني جذر Alpine i386 (Xorg + fluxbox) → `out/naml-rootfs-i386.tar.gz` |
+| `rootfs-overlay/` | ملفات تُنسخ فوق الجذر: `inittab`، `rc.sysinit`، `naml-x`، `xorg.conf.d` |
+| `install-naml-desktop.sh` | يهيّئ قسم ext4 وينسخ الجذر + النواة ويكتب مدخل GRUB |
+| `.github/workflows/build-naml.yml` | نفس البناء كاملاً في CI (BusyBox + جذر + نواة + initramfs) |
 
 ## تبعيات جهاز البناء
 
@@ -53,6 +60,37 @@ BB=out/busybox-i386-static INIT=./naml-init NAML_SHELL_BIN=./naml-shell \
 Artifact `naml-i386-kernel-*` من صفحة التشغيل. الافتراضيات مثبّتة
 (`kver=6.6.155`، `bbver=1.36.1`) ليكون البناء قابلاً للتكرار؛ غيّرهما في النموذج
 عند الحاجة (الفارغ = أحدث إصدار).
+
+## سطح المكتب (Xorg + fluxbox)
+
+جذر Alpine 3.20 i386 مبني بلا `root` على جهاز البناء: الحزم تُفكّ بـ
+`apk --root --no-scripts`، وكل التهيئة من عندنا (بلا openrc وبلا udev).
+
+```sh
+# على جهاز البناء (يحتاج شبكة فقط)
+sh build-naml-rootfs.sh          # → out/naml-rootfs-i386.tar.gz (~27MB)
+
+# نواة سطح المكتب (تدمج naml-desktop.config: ماوس PS/2 + USB HID)
+NAML_DESKTOP=1 BB=out/busybox-i386-static INIT=./naml-init \
+  NAML_SHELL_BIN=./naml-shell CONF=./init.conf sh build-naml-kernel.sh
+
+# على الجهاز الهدف (نواة 32-بت): يهيّئ /dev/sda1 ويعبّئه
+sudo ROOTDEV=/dev/sda1 YES=1 SET_PASS=1 \
+  ./install-naml-desktop.sh out/vmlinuz-naml out/naml-rootfs-i386.tar.gz
+```
+
+ماذا يعمل داخل سطح المكتب:
+
+- `busybox init` هو PID 1؛ `/etc/inittab` يشغّل `/etc/naml/rc.sysinit` ثم
+  `/usr/bin/naml-x` على `tty1` (و getty على `tty2`/`tty3`).
+- Xorg 21 على سائق **fbdev** مع `ShadowFB` (فرق ملموس على VGA بلا تسريع)،
+  الدقة 800×600×16 من `vga=0x314` أو `simpledrm`.
+- fluxbox + طرفيتا xterm، وخطوط DejaVu/Liberation عبر **Xft/fontconfig**
+  (لا خطوط X core ولا `fonts.dir`، لذلك لا `mkfontscale` في الصورة).
+- إدخال: لوحة PS/2 + ماوس PS/2، وأيضاً لوحة/ماوس USB عبر `USB_HID`.
+
+ما **لا** يحتوي عليه: متصفح ويب، تسريع رسومي (DRM/KMS)، صوت، أو بيئة GTK/Qt.
+على 256MB يبقى Xorg + fluxbox + طرفيتين حوالي 60–80MB من RAM.
 
 ## التثبيت على الجهاز الهدف
 
