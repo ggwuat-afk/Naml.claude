@@ -1,0 +1,589 @@
+#!/bin/sh
+# =============================================================================
+#  naml-init · v2.1 · PID 1
+#  init مصغّر: تهيئة + إشراف على الواجهة + حصد أيتام + إيقاف آمن.
+#  معاير لـ i386 / 256MB: أقل fork، سقوف tmpfs صارمة، لا core dumps، سجل في dmesg.
+#
+#  الإشارات: TERM/INT=reboot  USR1=halt  USR2/PWR=poweroff  HUP=reload  WINCH=diag
+#  الإعدادات: /etc/naml/init.conf  (أسطر NAML_KEY=value فقط، لا يُنفَّذ كود)
+#  فحص آمن : naml-init --check
+#  قاعدة   : PID 1 لا يخرج أبداً (خروجه = kernel panic) ⇒ لا set -e ولا set -u.
+# =============================================================================
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
+umask 022
+set +m
+unset IFS
+ulimit -c 0 2>/dev/null
+
+PROG=naml-init
+VERSION=2.1
+
+NAML_CONF=/etc/naml/init.conf
+NAML_TTY=tty1
+NAML_TERM=linux
+NAML_SHELL=
+NAML_FALLBACK_SHELL=/bin/sh
+NAML_HOSTNAME=naml
+NAML_RC_S=/etc/rcS
+NAML_RC_K=/etc/rcK
+NAML_CLEAN_ENV=1
+NAML_TUNE=1
+NAML_QUIET_CONSOLE=1
+NAML_VERBOSE=0
+NAML_NET_LO=1
+NAML_REMOUNT_RW=1
+NAML_OOM_GUARD=1
+NAML_SWAPOFF=0
+NAML_TMP_SIZE=16M
+NAML_RUN_SIZE=4M
+NAML_SHM_SIZE=8M
+NAML_RESPAWN_MIN=3
+NAML_RESPAWN_MAX=30
+NAML_FAIL_LIMIT=5
+NAML_STOP_WAIT=2
+
+CHILD=0 SHUTDOWN=0 NOW=0
+SHELL_BIN= SHELL_ARG= TTY_DEV= SESSION_MODE=plain HAVE_ENV=0 ENV_SIGOPT=
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+now() {
+    NOW=0
+    read -r NOW _ni_idle < /proc/uptime 2>/dev/null || NOW=0
+    NOW=${NOW%%.*}
+    case $NOW in ''|*[!0-9]*) NOW=0 ;; esac
+}
+
+log() {
+    _lg_p=6 _lg_t=INFO
+    case $1 in
+        err)   _lg_p=3; _lg_t=ERROR ;;
+        warn)  _lg_p=4; _lg_t=WARN  ;;
+        debug) _lg_p=7; _lg_t=DEBUG ;;
+    esac
+    shift
+    now
+    if [ -w /dev/kmsg ]; then
+        printf '<%s>%s[%s]: %s: %s\n' \
+            "$_lg_p" "$PROG" "$NOW" "$_lg_t" "$*" >/dev/kmsg 2>/dev/null
+    fi
+    if [ "$_lg_p" -le 4 ] || [ "$NAML_VERBOSE" != 0 ]; then
+        printf '%s: %s: %s\n' "$PROG" "$_lg_t" "$*" >&2
+    fi
+    return 0
+}
+
+is_mounted() {
+    [ -r /proc/mounts ] || return 1
+    while read -r _im_src _im_mp _im_rest; do
+        [ "$_im_mp" = "$1" ] && return 0
+    done < /proc/mounts
+    return 1
+}
+
+root_is_rw() {
+    _rw_res=1
+    [ -r /proc/mounts ] || return 1
+    while read -r _rw_src _rw_mp _rw_type _rw_opts _rw_rest; do
+        [ "$_rw_mp" = / ] || continue
+        case ,$_rw_opts, in *,rw,*) _rw_res=0 ;; *) _rw_res=1 ;; esac
+    done < /proc/mounts
+    return "$_rw_res"
+}
+
+mnt() {
+    _mn_type=$1 _mn_src=$2 _mn_mp=$3 _mn_opts=$4 _mn_crit=${5:-0}
+    is_mounted "$_mn_mp" && return 0
+    if [ ! -d "$_mn_mp" ]; then
+        mkdir -p "$_mn_mp" 2>/dev/null || {
+            log err "cannot create mountpoint $_mn_mp (read-only root?)"
+            return 1
+        }
+    fi
+    if [ "$_mn_opts" != - ]; then
+        mount -t "$_mn_type" -o "$_mn_opts" "$_mn_src" "$_mn_mp" 2>/dev/null
+    else
+        mount -t "$_mn_type" "$_mn_src" "$_mn_mp" 2>/dev/null
+    fi
+    is_mounted "$_mn_mp" && { log debug "mounted $_mn_mp"; return 0; }
+    if [ "$_mn_opts" != - ]; then
+        mount -t "$_mn_type" "$_mn_src" "$_mn_mp" 2>/dev/null
+        is_mounted "$_mn_mp" && { log warn "mounted $_mn_mp without options"; return 0; }
+    fi
+    if [ "$_mn_crit" = 1 ]; then
+        log err "CRITICAL mount failed: $_mn_mp ($_mn_type)"
+    else
+        log warn "mount failed: $_mn_mp ($_mn_type)"
+    fi
+    return 1
+}
+
+set_proc() {
+    [ -w "/proc/sys/$1" ] || return 0
+    printf '%s' "$2" > "/proc/sys/$1" 2>/dev/null || log debug "sysctl ignored: $1"
+    return 0
+}
+
+load_conf() {
+    [ -r "$NAML_CONF" ] || return 0
+    _cf_n=0
+    while read -r _cf_line || [ -n "$_cf_line" ]; do
+        case $_cf_line in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
+        _cf_key=${_cf_line%%=*}
+        _cf_val=${_cf_line#*=}
+        case $_cf_key in NAML_[A-Z0-9_]*) ;; *) continue ;; esac
+        case $_cf_key in *[!A-Z0-9_]*) log warn "conf: bad key skipped"; continue ;; esac
+        case $_cf_val in
+            \"*\") _cf_val=${_cf_val#\"}; _cf_val=${_cf_val%\"} ;;
+            \'*\') _cf_val=${_cf_val#\'}; _cf_val=${_cf_val%\'} ;;
+        esac
+        eval "$_cf_key=\$_cf_val"
+        _cf_n=$((_cf_n + 1))
+    done < "$NAML_CONF"
+    log info "config: $_cf_n setting(s) from $NAML_CONF"
+    return 0
+}
+
+sanitize_conf() {
+    for _sn_spec in "NAML_TUNE 1" "NAML_VERBOSE 0" "NAML_QUIET_CONSOLE 1" \
+                    "NAML_NET_LO 1" "NAML_REMOUNT_RW 1" "NAML_OOM_GUARD 1" \
+                    "NAML_CLEAN_ENV 1" "NAML_SWAPOFF 0" "NAML_RESPAWN_MIN 3" \
+                    "NAML_RESPAWN_MAX 30" "NAML_FAIL_LIMIT 5" "NAML_STOP_WAIT 2"
+    do
+        set -- $_sn_spec
+        eval "_sn_v=\$$1"
+        case $_sn_v in ''|*[!0-9]*) _sn_v=$2 ;; esac
+        eval "$1=\$_sn_v"
+    done
+    for _sn_spec in "NAML_TMP_SIZE 16M" "NAML_RUN_SIZE 4M" "NAML_SHM_SIZE 8M"; do
+        set -- $_sn_spec
+        eval "_sn_v=\$$1"
+        case $_sn_v in ''|*[!0-9KMGkmg]*) _sn_v=$2 ;; esac
+        eval "$1=\$_sn_v"
+    done
+    case $NAML_TTY      in ''|*[!a-zA-Z0-9_-]*)  NAML_TTY=tty1 ;; esac
+    case $NAML_TERM     in ''|*[!a-zA-Z0-9._-]*) NAML_TERM=linux ;; esac
+    case $NAML_HOSTNAME in ''|*[!a-zA-Z0-9.-]*)  NAML_HOSTNAME=naml ;; esac
+    case $NAML_SHELL          in ''|/*) ;; *) NAML_SHELL= ;; esac
+    case $NAML_RC_S           in ''|/*) ;; *) NAML_RC_S= ;; esac
+    case $NAML_RC_K           in ''|/*) ;; *) NAML_RC_K= ;; esac
+    case $NAML_CONF           in /*) ;; *) NAML_CONF=/etc/naml/init.conf ;; esac
+    case $NAML_FALLBACK_SHELL in /*) ;; *) NAML_FALLBACK_SHELL=/bin/sh ;; esac
+    [ "$NAML_RESPAWN_MIN" -ge 1 ] || NAML_RESPAWN_MIN=1
+    [ "$NAML_RESPAWN_MAX" -ge 1 ] || NAML_RESPAWN_MAX=30
+    [ "$NAML_FAIL_LIMIT"  -ge 1 ] || NAML_FAIL_LIMIT=5
+    return 0
+}
+
+seed_dev() {
+    for _sd_spec in \
+        "console 600 5 1" "null 666 1 3" "zero 666 1 5" "full 666 1 7" \
+        "random 666 1 8" "urandom 666 1 9" "tty 666 5 0" "tty0 600 4 0" \
+        "tty1 600 4 1" "tty2 600 4 2" "ttyS0 640 4 64" "ptmx 666 5 2" \
+        "kmsg 600 1 11" "fb0 660 29 0"
+    do
+        set -- $_sd_spec
+        [ -e "/dev/$1" ] || mknod -m "$2" "/dev/$1" c "$3" "$4" 2>/dev/null
+    done
+    return 0
+}
+
+stage_mounts() {
+    mnt proc proc /proc - 1 || last_resort "cannot mount /proc"
+
+    if [ "$NAML_REMOUNT_RW" != 0 ] && ! root_is_rw; then
+        mount -o remount,rw / 2>/dev/null \
+            && log info "root remounted read-write" \
+            || log warn "root stays read-only"
+    fi
+
+    mnt sysfs sysfs /sys - 1
+
+    if ! mnt devtmpfs devtmpfs /dev - 1; then
+        log warn "devtmpfs unsupported: falling back to tmpfs + mdev"
+        mnt tmpfs tmpfs /dev nosuid,mode=755,size=4M 1
+        seed_dev
+        for _sm_m in /sbin/mdev /bin/mdev; do
+            [ -x "$_sm_m" ] || continue
+            set_proc kernel/hotplug "$_sm_m"
+            "$_sm_m" -s 2>/dev/null
+            log info "device population: $_sm_m -s"
+            break
+        done
+    fi
+
+    [ -e /dev/fd ]     || ln -s /proc/self/fd   /dev/fd     2>/dev/null
+    [ -e /dev/stdin ]  || ln -s /proc/self/fd/0 /dev/stdin  2>/dev/null
+    [ -e /dev/stdout ] || ln -s /proc/self/fd/1 /dev/stdout 2>/dev/null
+    [ -e /dev/stderr ] || ln -s /proc/self/fd/2 /dev/stderr 2>/dev/null
+
+    if [ -c /dev/console ] && [ ! -t 1 ]; then
+        exec </dev/console >/dev/console 2>&1
+    fi
+
+    mnt devpts devpts /dev/pts nosuid,noexec,gid=5,mode=620 0
+    mnt tmpfs  tmpfs  /dev/shm "nosuid,nodev,noexec,mode=1777,size=$NAML_SHM_SIZE" 0
+    mnt tmpfs  tmpfs  /run     "nosuid,nodev,noexec,mode=755,size=$NAML_RUN_SIZE"  0
+    mnt tmpfs  tmpfs  /tmp     "nosuid,nodev,mode=1777,size=$NAML_TMP_SIZE"        0
+    return 0
+}
+
+stage_tune() {
+    if [ "$NAML_OOM_GUARD" != 0 ] && [ -w /proc/self/oom_score_adj ]; then
+        printf '%s' -1000 >/proc/self/oom_score_adj 2>/dev/null
+    fi
+    set_proc kernel/hostname "$NAML_HOSTNAME"
+
+    if [ "$NAML_TUNE" != 0 ]; then
+        set_proc kernel/panic 10
+        set_proc kernel/panic_on_oops 1
+        set_proc kernel/sysrq 1
+        set_proc vm/min_free_kbytes 4096
+        set_proc vm/vfs_cache_pressure 200
+        set_proc vm/swappiness 30
+        set_proc vm/dirty_ratio 10
+        set_proc vm/dirty_background_ratio 5
+        set_proc vm/dirty_writeback_centisecs 500
+        set_proc vm/dirty_expire_centisecs 1000
+    fi
+    [ "$NAML_QUIET_CONSOLE" != 0 ] && set_proc kernel/printk "3 4 1 3"
+
+    if [ "$NAML_NET_LO" != 0 ]; then
+        if have ip; then
+            ip link set lo up 2>/dev/null || log warn "loopback: ip failed"
+        elif have ifconfig; then
+            ifconfig lo 127.0.0.1 up 2>/dev/null || log warn "loopback: ifconfig failed"
+        else
+            log warn "loopback: neither ip nor ifconfig present"
+        fi
+    fi
+    return 0
+}
+
+run_rc() {
+    [ -n "$1" ] || return 0
+    [ -f "$1" ] || return 0
+    log info "running $2: $1"
+    if [ -x "$1" ]; then "$1" </dev/null; else /bin/sh "$1" </dev/null; fi
+    _rc_s=$?
+    [ "$_rc_s" = 0 ] || log warn "$2 exited with status $_rc_s"
+    return 0
+}
+
+pick_fallback_shell() {
+    SHELL_ARG=
+    for _pf_c in "$NAML_FALLBACK_SHELL" /bin/sh /bin/ash /bin/busybox /usr/bin/busybox; do
+        [ -x "$_pf_c" ] || continue
+        SHELL_BIN=$_pf_c
+        case $_pf_c in */busybox) SHELL_ARG=sh ;; esac
+        return 0
+    done
+    return 1
+}
+
+pick_shell() {
+    SHELL_ARG=
+    if [ -n "$NAML_SHELL" ]; then
+        if [ -x "$NAML_SHELL" ]; then SHELL_BIN=$NAML_SHELL; return 0; fi
+        log warn "NAML_SHELL not executable: $NAML_SHELL"
+    fi
+    for _ps_c in /usr/bin/naml-shell /bin/naml-shell /usr/local/bin/naml-shell; do
+        [ -x "$_ps_c" ] || continue
+        SHELL_BIN=$_ps_c
+        log info "interface: $SHELL_BIN"
+        return 0
+    done
+    log warn "naml-shell not found: using rescue shell"
+    pick_fallback_shell
+}
+
+pick_tty() {
+    TTY_DEV=/dev/$NAML_TTY
+    if [ ! -c "$TTY_DEV" ]; then
+        log warn "$TTY_DEV absent: using /dev/console"
+        TTY_DEV=/dev/console
+    fi
+    [ -c "$TTY_DEV" ] || last_resort "no usable terminal device"
+    return 0
+}
+
+pick_session_mode() {
+    HAVE_ENV=0; have env && HAVE_ENV=1
+    if [ "$HAVE_ENV" = 1 ] && env --default-signal=INT,QUIT true >/dev/null 2>&1; then
+        ENV_SIGOPT=--default-signal=INT,QUIT
+    fi
+    if have setsid; then
+        if setsid -c true <"$TTY_DEV" >/dev/null 2>&1; then
+            SESSION_MODE=setsid-c; return 0
+        fi
+        if have cttyhack; then SESSION_MODE=setsid-ctty; return 0; fi
+        SESSION_MODE=setsid
+        log warn "setsid without ctty: terminal job control limited"
+        return 0
+    fi
+    if have cttyhack; then SESSION_MODE=ctty; return 0; fi
+    SESSION_MODE=plain
+    log warn "no setsid/cttyhack: session has no controlling terminal"
+    return 0
+}
+
+reset_tty() {
+    [ -c "$TTY_DEV" ] || return 0
+    printf '\033c\033[0m\033[?25h' >"$TTY_DEV" 2>/dev/null
+    have stty && stty sane <"$TTY_DEV" >/dev/null 2>&1
+    return 0
+}
+
+launch_session() {
+    trap - EXIT INT TERM USR1 USR2 HUP WINCH 2>/dev/null
+    trap - PWR 2>/dev/null
+    set -- "$SHELL_BIN" ${SHELL_ARG:+"$SHELL_ARG"}
+    case $SESSION_MODE in
+        setsid-c)    set -- setsid -c "$@" ;;
+        setsid-ctty) set -- setsid cttyhack "$@" ;;
+        ctty)        set -- cttyhack "$@" ;;
+        setsid)      set -- setsid "$@" ;;
+    esac
+    if [ "$NAML_CLEAN_ENV" != 0 ] && [ "$HAVE_ENV" = 1 ]; then
+        if [ -n "${TZ:-}" ]; then
+            set -- env -i ${ENV_SIGOPT:+"$ENV_SIGOPT"} "PATH=$PATH" HOME=/ \
+                   "TERM=$NAML_TERM" "SHELL=$SHELL_BIN" USER=root LOGNAME=root \
+                   LANG=C "TZ=$TZ" "$@"
+        else
+            set -- env -i ${ENV_SIGOPT:+"$ENV_SIGOPT"} "PATH=$PATH" HOME=/ \
+                   "TERM=$NAML_TERM" "SHELL=$SHELL_BIN" USER=root LOGNAME=root \
+                   LANG=C "$@"
+        fi
+    fi
+    exec "$@"
+}
+
+supervise() {
+    _sv_fails=0
+    while :; do
+        [ -x "$SHELL_BIN" ] || pick_shell || last_resort "session binary vanished"
+        [ -c "$TTY_DEV" ]   || pick_tty
+        reset_tty
+        now; _sv_t0=$NOW
+
+        launch_session <"$TTY_DEV" >"$TTY_DEV" 2>&1 &
+        CHILD=$!
+        if [ -z "$CHILD" ]; then
+            log err "fork failed (out of memory?)"
+            sleep 5
+            continue
+        fi
+        log info "session pid=$CHILD tty=$TTY_DEV mode=$SESSION_MODE shell=$SHELL_BIN"
+        if [ "$NAML_OOM_GUARD" != 0 ] && [ -w "/proc/$CHILD/oom_score_adj" ]; then
+            printf '%s' -500 >"/proc/$CHILD/oom_score_adj" 2>/dev/null
+        fi
+
+        _sv_rc=0
+        while :; do
+            wait "$CHILD" 2>/dev/null
+            _sv_rc=$?
+            kill -0 "$CHILD" 2>/dev/null || break
+        done
+        _sv_pid=$CHILD
+        CHILD=0
+
+        if [ "$_sv_pid" -gt 1 ] 2>/dev/null; then
+            kill -KILL -"$_sv_pid" 2>/dev/null
+        fi
+
+        now; _sv_dur=$((NOW - _sv_t0))
+        log info "session ended after ${_sv_dur}s (status $_sv_rc)"
+
+        if [ "$_sv_dur" -ge "$NAML_RESPAWN_MIN" ]; then
+            _sv_fails=0
+        else
+            _sv_fails=$((_sv_fails + 1))
+            log warn "fast exit #$_sv_fails (${_sv_dur}s < ${NAML_RESPAWN_MIN}s)"
+        fi
+
+        if [ "$_sv_fails" -ge "$NAML_FAIL_LIMIT" ]; then
+            if [ "$SHELL_BIN" != "$NAML_FALLBACK_SHELL" ] && pick_fallback_shell; then
+                log err "interface unstable: switching to rescue shell $SHELL_BIN"
+            else
+                log err "respawn storm: cooling down ${NAML_RESPAWN_MAX}s"
+            fi
+            _sv_fails=0
+            sleep "$NAML_RESPAWN_MAX"
+            continue
+        fi
+
+        if [ "$_sv_fails" -gt 0 ]; then
+            _sv_delay=$((_sv_fails * 2))
+            [ "$_sv_delay" -le "$NAML_RESPAWN_MAX" ] || _sv_delay=$NAML_RESPAWN_MAX
+        else
+            _sv_delay=1
+        fi
+        sleep "$_sv_delay"
+    done
+}
+
+unmount_all() {
+    [ -r /proc/mounts ] || return 0
+    set --
+    while read -r _um_src _um_mp _um_type _um_rest; do
+        case $_um_mp in /|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*) continue ;; esac
+        set -- "$_um_mp" "$@"
+    done < /proc/mounts
+    for _um_mp in "$@"; do
+        umount "$_um_mp"    2>/dev/null && continue
+        umount -r "$_um_mp" 2>/dev/null && continue
+        log warn "umount failed: $_um_mp"
+    done
+    return 0
+}
+
+sysrq_fallback() {
+    [ -w /proc/sysrq-trigger ] || return 0
+    log warn "using SysRq fallback for $1"
+    printf '%s' s >/proc/sysrq-trigger 2>/dev/null
+    printf '%s' u >/proc/sysrq-trigger 2>/dev/null
+    case $1 in
+        reboot)   printf '%s' b >/proc/sysrq-trigger 2>/dev/null ;;
+        poweroff) printf '%s' o >/proc/sysrq-trigger 2>/dev/null ;;
+        halt)     printf '%s' o >/proc/sysrq-trigger 2>/dev/null ;;
+    esac
+    return 0
+}
+
+do_shutdown() {
+    [ "$SHUTDOWN" = 0 ] || return 0
+    SHUTDOWN=1
+    _sh_act=$1
+    log warn "shutdown requested: $_sh_act"
+
+    if [ "$CHILD" -gt 1 ] 2>/dev/null; then
+        kill -TERM -"$CHILD" 2>/dev/null
+        kill -TERM "$CHILD"  2>/dev/null
+    fi
+    run_rc "$NAML_RC_K" rcK
+
+    kill -TERM -1 2>/dev/null
+    sleep "$NAML_STOP_WAIT"
+    kill -KILL -1 2>/dev/null
+    sync
+
+    if [ "$NAML_SWAPOFF" != 0 ] && have swapoff; then swapoff -a 2>/dev/null; fi
+    unmount_all
+    mount -o remount,ro / 2>/dev/null || log warn "could not remount / read-only"
+    sync
+    sleep 1
+
+    log warn "executing $_sh_act"
+    "$_sh_act" -f 2>/dev/null
+    sysrq_fallback "$_sh_act"
+    last_resort "$_sh_act failed"
+}
+
+reload_conf() {
+    log info "SIGHUP: reloading configuration"
+    load_conf
+    sanitize_conf
+    set_proc kernel/hostname "$NAML_HOSTNAME"
+    pick_shell
+    log info "reloaded (tty/session-mode changes need a reboot)"
+    return 0
+}
+
+dump_state() {
+    now
+    log warn "==== diagnostics (uptime ${NOW}s) ===="
+    log warn "shell=$SHELL_BIN tty=$TTY_DEV mode=$SESSION_MODE child=$CHILD"
+    read -r _ds_l1 _ds_l2 _ds_l3 _ds_rest < /proc/loadavg 2>/dev/null
+    log warn "load=${_ds_l1:-?} ${_ds_l2:-?} ${_ds_l3:-?}"
+    [ -r /proc/meminfo ] || return 0
+    while read -r _ds_k _ds_v _ds_u; do
+        case $_ds_k in
+            MemTotal:|MemFree:|MemAvailable:|Cached:|Dirty:|SwapTotal:|SwapFree:)
+                log warn "mem $_ds_k $_ds_v $_ds_u" ;;
+        esac
+    done < /proc/meminfo
+    return 0
+}
+
+last_resort() {
+    log err "FATAL: $*"
+    log err "PID 1 must not exit (exit = kernel panic); trying rescue shell"
+    while :; do
+        if pick_fallback_shell && [ -c /dev/console ]; then
+            "$SHELL_BIN" ${SHELL_ARG:+"$SHELL_ARG"} </dev/console >/dev/console 2>&1
+        fi
+        sleep 5
+    done
+}
+
+usage() {
+    printf '%s %s - minimal PID 1 init for naml\n\n' "$PROG" "$VERSION"
+    printf 'usage: %s [--check|--version|--help]\n' "$PROG"
+    printf '  run normally only as PID 1: kernel cmdline "init=/sbin/%s"\n\n' "$PROG"
+    printf 'signals: TERM/INT=reboot  USR1=halt  USR2/PWR=poweroff  HUP=reload  WINCH=diag\n'
+    printf 'config:  %s  (NAML_KEY=value lines only)\n' "$NAML_CONF"
+}
+
+selftest() {
+    printf '%s %s - self-test (read-only)\n\n' "$PROG" "$VERSION"
+    _st_bad=0
+    if sh -n "$0" 2>/dev/null; then printf '  ok   : shell syntax\n'
+    else printf '  FAIL : shell syntax\n'; _st_bad=1; fi
+    load_conf; sanitize_conf
+    printf '  ok   : config parsed (%s)\n' "$NAML_CONF"
+    if pick_shell >/dev/null 2>&1; then
+        printf '  ok   : session binary -> %s %s\n' "$SHELL_BIN" "$SHELL_ARG"
+    else
+        printf '  FAIL : no usable shell/interface binary\n'; _st_bad=1
+    fi
+    for _st_a in mount umount mknod sleep sync kill reboot poweroff halt \
+                 setsid cttyhack env stty mdev ip ifconfig; do
+        if have "$_st_a"; then printf '  ok   : %s\n' "$_st_a"
+        else printf '  --   : %s (absent)\n' "$_st_a"; fi
+    done
+    for _st_a in mount umount sleep sync; do
+        have "$_st_a" || { printf '  FAIL : missing %s\n' "$_st_a"; _st_bad=1; }
+    done
+    printf '\n  tty=%s term=%s tmpfs /tmp=%s /run=%s /dev/shm=%s\n' \
+        "$NAML_TTY" "$NAML_TERM" "$NAML_TMP_SIZE" "$NAML_RUN_SIZE" "$NAML_SHM_SIZE"
+    if [ "$_st_bad" = 0 ]; then printf 'RESULT: PASS\n'; else printf 'RESULT: FAIL\n'; fi
+    return "$_st_bad"
+}
+
+main() {
+    case ${1:-} in
+        -h|--help)          usage; return 0 ;;
+        -V|--version)       printf '%s %s\n' "$PROG" "$VERSION"; return 0 ;;
+        --check|--selftest) selftest; return $? ;;
+    esac
+    if [ $$ -ne 1 ]; then
+        printf '%s: refusing to run: I am PID %s, not 1.\n' "$PROG" "$$" >&2
+        printf 'use --check for a safe test, or boot with init=/sbin/%s\n' "$PROG" >&2
+        return 1
+    fi
+
+    trap 'last_resort "PID 1 shell exiting unexpectedly"' EXIT
+    trap 'do_shutdown reboot'   INT TERM
+    trap 'do_shutdown halt'     USR1
+    trap 'do_shutdown poweroff' USR2
+    trap 'do_shutdown poweroff' PWR 2>/dev/null
+    trap 'reload_conf'          HUP
+    trap 'dump_state'           WINCH
+
+    log info "$PROG $VERSION starting"
+    load_conf
+    sanitize_conf
+    stage_mounts
+    stage_tune
+    pick_tty
+    pick_session_mode
+    pick_shell || last_resort "no shell binary found"
+    run_rc "$NAML_RC_S" rcS
+    now
+    log info "boot complete in ${NOW}s"
+    supervise
+}
+
+main "$@"

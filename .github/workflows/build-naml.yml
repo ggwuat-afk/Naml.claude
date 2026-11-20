@@ -1,0 +1,87 @@
+name: Build NAML i386 Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kver:
+        description: 'Linux version (ثابت 6.6.155 لبناء قابل للتكرار)'
+        required: false
+        default: '6.6.155'
+      bbver:
+        description: 'BusyBox version (ثابت 1.36.1 لبناء قابل للتكرار)'
+        required: false
+        default: '1.36.1'
+      disk:
+        description: 'تعريفات قرص + ext4'
+        type: choice
+        options: ['1', '0']
+        default: '1'
+      embed:
+        description: 'initramfs مضمّن داخل bzImage'
+        type: choice
+        options: ['0', '1']
+        default: '0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CACHE: ${{ github.workspace }}/.naml-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-multilib libc6-dev-i386 \
+            bc bison flex libssl-dev libelf-dev cpio gzip bzip2 xz-utils tar \
+            coreutils binutils curl zstd
+
+      - name: Cache sources
+        uses: actions/cache@v4
+        with:
+          path: .naml-cache
+          key: naml-src-${{ inputs.kver || 'auto' }}-${{ inputs.bbver || 'auto' }}
+
+      - name: Lint scripts
+        run: |
+          for f in naml-init naml-shell build-naml-kernel.sh build-busybox-i386.sh install-naml-boot.sh; do
+            sh -n "$f" && echo "ok: $f"
+          done
+
+      - name: Build BusyBox (i386 static)
+        env:
+          BB_VER: ${{ inputs.bbver }}
+        run: sh build-busybox-i386.sh
+
+      - name: Build kernel + initramfs
+        env:
+          KVER: ${{ inputs.kver }}
+          NAML_DISK: ${{ inputs.disk }}
+          EMBED: ${{ inputs.embed }}
+          BB: ${{ github.workspace }}/out/busybox-i386-static
+          INIT: ${{ github.workspace }}/naml-init
+          NAML_SHELL_BIN: ${{ github.workspace }}/naml-shell
+          CONF: ${{ github.workspace }}/init.conf
+        run: sh build-naml-kernel.sh
+
+      - name: Summary
+        run: |
+          {
+            echo "### NAML i386"
+            echo "- kernel: $(cat out/KVERSION)"
+            echo "- busybox: $(cat out/BBVERSION)"
+            echo "- bzImage: $(du -h out/vmlinuz-naml | cut -f1)"
+            echo "- initramfs: $(du -h out/initramfs-naml.cpio.gz | cut -f1)"
+            echo '```'
+            grep -E '^CONFIG_(FB|FB_CORE|FB_DEVICE|FB_VESA|DRM_SIMPLEDRM|DRM_FBDEV_EMULATION|SYSFB_SIMPLEFB|X86_SYSFB)=' out/naml-i386.config
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: naml-i386-kernel-${{ inputs.kver || 'latest-6.6' }}
+          path: out/*
+          if-no-files-found: error

@@ -1,0 +1,102 @@
+#!/bin/sh
+# =============================================================================
+# naml-shell — واجهة كونسول دنيا تعمل على tty1 (POSIX ash / BusyBox)
+# استبدل هذا الملف بواجهتك الحقيقية (سكربت أو ثنائي i386)؛ naml-init يشرف عليه.
+# =============================================================================
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
+umask 022
+
+FB=/sys/class/graphics/fb0
+
+cls()  { printf '\033c\033[0m\033[?25h'; }
+hr()   { printf '----------------------------------------------------------\n'; }
+pause() { printf '\n[ENTER] للمتابعة '; read -r _ns_x || exit 0; }
+
+mem_line() {
+    _ns_t=0 _ns_f=0 _ns_a=0
+    while read -r _ns_k _ns_v _ns_u; do
+        case $_ns_k in
+            MemTotal:)     _ns_t=$_ns_v ;;
+            MemFree:)      _ns_f=$_ns_v ;;
+            MemAvailable:) _ns_a=$_ns_v ;;
+        esac
+    done < /proc/meminfo 2>/dev/null
+    printf 'RAM: %s MB total | %s MB free | %s MB available\n' \
+        "$((_ns_t / 1024))" "$((_ns_f / 1024))" "$((_ns_a / 1024))"
+}
+
+fb_line() {
+    if [ -r "$FB/virtual_size" ]; then
+        read -r _ns_sz < "$FB/virtual_size"
+        read -r _ns_bp < "$FB/bits_per_pixel"
+        printf 'FB : /dev/fb0  %s  %s bpp\n' "$_ns_sz" "$_ns_bp"
+    else
+        printf 'FB : /dev/fb0 غير متاح\n'
+    fi
+}
+
+up_line() {
+    read -r _ns_up _ns_idle < /proc/uptime 2>/dev/null || _ns_up=0
+    printf 'UP : %s s\n' "${_ns_up%%.*}"
+}
+
+sysinfo() {
+    cls; hr; printf ' معلومات النظام\n'; hr
+    up_line; mem_line; fb_line
+    printf '\n'; free 2>/dev/null
+    printf '\n'; df -h 2>/dev/null
+    pause
+}
+
+fbinfo() {
+    cls; hr; printf ' framebuffer\n'; hr
+    fb_line
+    cat /proc/fb 2>/dev/null
+    have_fbset=0
+    command -v fbset >/dev/null 2>&1 && have_fbset=1
+    if [ "$have_fbset" = 1 ]; then printf '\n'; fbset -i 2>/dev/null; fi
+    pause
+}
+
+logs() {
+    cls; hr; printf ' آخر 25 سطر من dmesg\n'; hr
+    dmesg 2>/dev/null | tail -n 25
+    pause
+}
+
+act() {
+    cls
+    printf 'تنفيذ: %s ...\n' "$1"
+    "$1" 2>/dev/null
+    sleep 3
+    printf 'إن بقي النظام يعمل، فالطلب لم يُنفَّذ (راجع dmesg).\n'
+    pause
+}
+
+while :; do
+    cls
+    hr
+    printf ' naml · i386 · 256MB\n'
+    hr
+    up_line; mem_line; fb_line
+    hr
+    printf ' 1) صدفة BusyBox        2) معلومات النظام\n'
+    printf ' 3) framebuffer        4) سجل النواة\n'
+    printf ' 5) إعادة تشغيل        6) إطفاء\n'
+    printf ' 7) halt               0) خروج (يعيد التشغيل init)\n'
+    hr
+    printf 'اختيار> '
+    read -r c || exit 0
+    case $c in
+        1) cls; printf 'صدفة إنقاذ — exit للعودة\n\n'; sh ;;
+        2) sysinfo ;;
+        3) fbinfo ;;
+        4) logs ;;
+        5) act reboot ;;
+        6) act poweroff ;;
+        7) act halt ;;
+        0) exit 0 ;;
+        *) ;;
+    esac
+done
